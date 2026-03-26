@@ -1,0 +1,10 @@
+name=tree
+type=billboard
+texture_base=trunk.png
+texture_top=trunk_top.png
+texture_extra=leaves.png
+width=1.0
+height_base=2.0
+height_extra=2.5
+extra_width=3.5
+spawn_chance=8

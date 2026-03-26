@@ -1,0 +1,10 @@
+name=rock
+type=billboard
+texture_base=rock.png
+texture_top=rock.png
+texture_extra=
+width=0.8
+height_base=0.5
+height_extra=0
+extra_width=0
+spawn_chance=4
