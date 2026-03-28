@@ -1,13 +1,25 @@
 #include "cub3d.h"
 
+/*
+** player3d.c — Rendu de Steve en 3D isométrique dans l'inventaire.
+**
+** CORRECTIONS crash inventaire :
+**   - On n'appelle plus SDL_CreateTexture / SDL_DestroyTexture par frame.
+**     La texture steve_tex est pré-allouée une fois dans init.c
+**     (game->steve_tex, game->steve_buf).
+**   - On vérifie que game->steve_tex != NULL avant toute opération SDL.
+**   - La taille du buffer est fixe (steve_tex_w × steve_tex_h).
+**   - On efface le buffer avec memset() avant chaque dessin.
+*/
+
 typedef struct s_v3  { float x; float y; float z; } t_v3;
 typedef struct s_pt  { float x; float y; }           t_pt;
 
 static t_v3 rotate_y(t_v3 v, float a)
 {
     t_v3 r;
-    r.x = v.x * cosf(a) + v.z * sinf(a);
-    r.y = v.y;
+    r.x =  v.x * cosf(a) + v.z * sinf(a);
+    r.y =  v.y;
     r.z = -v.x * sinf(a) + v.z * cosf(a);
     return (r);
 }
@@ -22,8 +34,13 @@ static t_pt project(t_v3 v, int ox, int oy, float s)
 
 static int face_visible(t_pt p[4])
 {
-    float ax = p[1].x - p[0].x, ay = p[1].y - p[0].y;
-    float bx = p[3].x - p[0].x, by = p[3].y - p[0].y;
+    float ax;
+    float ay;
+    float bx;
+    float by;
+
+    ax = p[1].x - p[0].x; ay = p[1].y - p[0].y;
+    bx = p[3].x - p[0].x; by = p[3].y - p[0].y;
     return ((ax * by - ay * bx) > 0);
 }
 
@@ -42,6 +59,8 @@ static void draw_face_affine(Uint32 *buf, int bw, int bh,
     int     min_x, max_x, min_y, max_y, x, y, sx, sy, i;
     Uint32  pixel;
     Uint8   *p, r, g, b, a;
+
+    if (!tex || !tex->pixels) return ;
 
     e0x = pts[1].x - pts[0].x; e0y = pts[1].y - pts[0].y;
     e1x = pts[3].x - pts[0].x; e1y = pts[3].y - pts[0].y;
@@ -81,6 +100,10 @@ static void draw_face_affine(Uint32 *buf, int bw, int bh,
                 clamp_uv(&u, &v);
                 sx = (int)(u * (tex->w - 1));
                 sy = (int)(v * (tex->h - 1));
+                if (sx < 0) sx = 0;
+                if (sy < 0) sy = 0;
+                if (sx >= tex->w) sx = tex->w - 1;
+                if (sy >= tex->h) sy = tex->h - 1;
                 pixel = tex->pixels[sy * tex->w + sx];
                 p = (Uint8 *)&pixel;
                 b = p[0]; g = p[1]; r = p[2]; a = p[3];
@@ -96,19 +119,6 @@ static void draw_face_affine(Uint32 *buf, int bw, int bh,
     }
 }
 
-/*
-** Convention skin Minecraft pour les faces latérales :
-**
-** Parties GAUCHE (bras G, jambe G, tête) :
-**   face géom. droite (X+) → skin "right"
-**   face géom. gauche (X-) → skin "left"
-**
-** Parties DROITE/CENTRE (corps, bras D, jambe D) :
-**   face géom. droite (X+) → skin "left"  (miroir)
-**   face géom. gauche (X-) → skin "right" (miroir)
-**
-** swap_rl=1 active ce miroir.
-*/
 static void draw_cube_part(t_game *g, Uint32 *buf, int bw, int bh,
     float x1, float y1, float z1,
     float x2, float y2, float z2,
@@ -123,92 +133,106 @@ static void draw_cube_part(t_game *g, Uint32 *buf, int bw, int bh,
     t_v3 c[8];
     t_pt pts[4];
     int  i = 0;
-    /* fr = texture à afficher sur la face géométrique droite (X+) */
     int  fr = swap_rl ? f_left  : f_right;
-    /* fl = texture à afficher sur la face géométrique gauche (X-) */
     int  fl = swap_rl ? f_right : f_left;
+
+    /* Vérification des indices de faces */
+    if (f_front < 0 || f_front >= SKIN_FACES) return ;
+    if (f_back  < 0 || f_back  >= SKIN_FACES) return ;
+    if (f_right < 0 || f_right >= SKIN_FACES) return ;
+    if (f_left  < 0 || f_left  >= SKIN_FACES) return ;
+    if (f_top   < 0 || f_top   >= SKIN_FACES) return ;
 
     while (i < 8) { c[i] = rotate_y(raw[i], angle); i++; }
 
-    /* Arrière Z- (toujours f_back) */
     pts[0]=project(c[5],ox,oy,s); pts[1]=project(c[4],ox,oy,s);
     pts[2]=project(c[0],ox,oy,s); pts[3]=project(c[1],ox,oy,s);
     if (face_visible(pts))
         draw_face_affine(buf,bw,bh,pts,&g->faces[f_back],150);
 
-    /* Gauche X- → fl */
     pts[0]=project(c[4],ox,oy,s); pts[1]=project(c[7],ox,oy,s);
     pts[2]=project(c[3],ox,oy,s); pts[3]=project(c[0],ox,oy,s);
     if (face_visible(pts))
         draw_face_affine(buf,bw,bh,pts,&g->faces[fl],160);
 
-    /* Droite X+ → fr */
     pts[0]=project(c[6],ox,oy,s); pts[1]=project(c[5],ox,oy,s);
     pts[2]=project(c[1],ox,oy,s); pts[3]=project(c[2],ox,oy,s);
     if (face_visible(pts))
         draw_face_affine(buf,bw,bh,pts,&g->faces[fr],160);
 
-    /* Dessus */
     pts[0]=project(c[4],ox,oy,s); pts[1]=project(c[5],ox,oy,s);
     pts[2]=project(c[6],ox,oy,s); pts[3]=project(c[7],ox,oy,s);
     if (face_visible(pts))
         draw_face_affine(buf,bw,bh,pts,&g->faces[f_top],210);
 
-    /* Avant Z+ (toujours f_front, en dernier) */
     pts[0]=project(c[7],ox,oy,s); pts[1]=project(c[6],ox,oy,s);
     pts[2]=project(c[2],ox,oy,s); pts[3]=project(c[3],ox,oy,s);
     if (face_visible(pts))
         draw_face_affine(buf,bw,bh,pts,&g->faces[f_front],255);
 }
 
-void draw_steve_3d(t_game *g, int ox, int oy, float angle, float s)
+/*
+** draw_steve_3d : utilise la texture pré-allouée game->steve_tex.
+** Ne crée plus de texture SDL à chaque appel → pas de crash.
+**
+** ox, oy : point d'ancrage (bas du personnage) dans l'UI renderer
+** angle   : rotation Y
+** scale   : facteur de taille
+*/
+void draw_steve_3d(t_game *g, int ox, int oy, float angle, float scale)
 {
-    int         bw, bh, lox, loy;
-    Uint32      *buf;
-    SDL_Texture *tex;
-    SDL_Rect    dst;
+    int     bw;
+    int     bh;
+    int     lox;
+    int     loy;
+    SDL_Rect dst;
 
-    bw  = (int)(s * 28) + 80;
-    bh  = (int)(s * 44) + 80;
-    buf = calloc(bw * bh, sizeof(Uint32));
-    if (!buf) return ;
+    if (!g->steve_tex || !g->steve_buf)
+        return ;
+
+    bw  = g->steve_tex_w;
+    bh  = g->steve_tex_h;
+
+    /* Effacer le buffer (transparent) */
+    memset(g->steve_buf, 0, (size_t)(bw * bh) * sizeof(Uint32));
+
+    /* Point d'ancrage local dans le buffer */
     lox = bw / 2;
     loy = (int)(bh * 0.80f);
 
-    /* Jambe gauche — pas de swap */
-    draw_cube_part(g,buf,bw,bh,-4,0,-2,0,12,2,angle,lox,loy,s,
-        LEG_L_FRONT,LEG_L_BACK,LEG_L_RIGHT,LEG_L_LEFT,LEG_L_TOP,0);
+    /* S'assurer que scale est raisonnable */
+    if (scale < 0.5f)  scale = 0.5f;
+    if (scale > 8.0f)  scale = 8.0f;
 
-    /* Jambe droite — swap */
-    draw_cube_part(g,buf,bw,bh,0,0,-2,4,12,2,angle,lox,loy,s,
-        LEG_R_FRONT,LEG_R_BACK,LEG_R_RIGHT,LEG_R_LEFT,LEG_R_TOP,1);
+    draw_cube_part(g, g->steve_buf, bw, bh,
+        -4,0,-2, 0,12,2, angle, lox, loy, scale,
+        LEG_L_FRONT, LEG_L_BACK, LEG_L_RIGHT, LEG_L_LEFT, LEG_L_TOP, 0);
 
-    /* Corps — swap */
-    draw_cube_part(g,buf,bw,bh,-4,12,-2,4,24,2,angle,lox,loy,s,
-        BODY_FRONT,BODY_BACK,BODY_RIGHT,BODY_LEFT,BODY_TOP,1);
+    draw_cube_part(g, g->steve_buf, bw, bh,
+        0,0,-2, 4,12,2, angle, lox, loy, scale,
+        LEG_R_FRONT, LEG_R_BACK, LEG_R_RIGHT, LEG_R_LEFT, LEG_R_TOP, 1);
 
-    /* Bras gauche — pas de swap */
-    draw_cube_part(g,buf,bw,bh,-6,12,-2,-4,24,2,angle,lox,loy,s,
-        ARM_L_FRONT,ARM_L_BACK,ARM_L_RIGHT,ARM_L_LEFT,ARM_L_TOP,0);
+    draw_cube_part(g, g->steve_buf, bw, bh,
+        -4,12,-2, 4,24,2, angle, lox, loy, scale,
+        BODY_FRONT, BODY_BACK, BODY_RIGHT, BODY_LEFT, BODY_TOP, 1);
 
-    /* Bras droit — swap */
-    draw_cube_part(g,buf,bw,bh,4,12,-2,6,24,2,angle,lox,loy,s,
-        ARM_R_FRONT,ARM_R_BACK,ARM_R_RIGHT,ARM_R_LEFT,ARM_R_TOP,1);
+    draw_cube_part(g, g->steve_buf, bw, bh,
+        -6,12,-2, -4,24,2, angle, lox, loy, scale,
+        ARM_L_FRONT, ARM_L_BACK, ARM_L_RIGHT, ARM_L_LEFT, ARM_L_TOP, 0);
 
-    /* Tête — pas de swap */
-    draw_cube_part(g,buf,bw,bh,-4,24,-4,4,32,4,angle,lox,loy,s,
-        HEAD_FRONT,HEAD_BACK,HEAD_RIGHT,HEAD_LEFT,HEAD_TOP,0);
+    draw_cube_part(g, g->steve_buf, bw, bh,
+        4,12,-2, 6,24,2, angle, lox, loy, scale,
+        ARM_R_FRONT, ARM_R_BACK, ARM_R_RIGHT, ARM_R_LEFT, ARM_R_TOP, 1);
 
-    tex = SDL_CreateTexture(g->renderer,
-        SDL_PIXELFORMAT_ARGB8888,
-        SDL_TEXTUREACCESS_STREAMING, bw, bh);
-    if (tex)
-    {
-        SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
-        SDL_UpdateTexture(tex, NULL, buf, bw * sizeof(Uint32));
-        dst = (SDL_Rect){ox - bw/2, oy - bh + 30, bw, bh};
-        SDL_RenderCopy(g->renderer, tex, NULL, &dst);
-        SDL_DestroyTexture(tex);
-    }
-    free(buf);
+    draw_cube_part(g, g->steve_buf, bw, bh,
+        -4,24,-4, 4,32,4, angle, lox, loy, scale,
+        HEAD_FRONT, HEAD_BACK, HEAD_RIGHT, HEAD_LEFT, HEAD_TOP, 0);
+
+    /* Mettre à jour la texture pré-allouée */
+    SDL_UpdateTexture(g->steve_tex, NULL,
+        g->steve_buf, bw * (int)sizeof(Uint32));
+
+    /* Rendre dans la zone UI */
+    dst = (SDL_Rect){ ox - bw / 2, oy - bh + 30, bw, bh };
+    SDL_RenderCopy(g->renderer, g->steve_tex, NULL, &dst);
 }

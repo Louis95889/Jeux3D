@@ -1,10 +1,6 @@
 #include "cub3d.h"
 #include <dirent.h>
 
-/*
-** Parse une ligne "cle=valeur" et retourne la valeur.
-** Retourne NULL si la clé ne correspond pas.
-*/
 static char *parse_value(char *line, const char *key)
 {
     int     klen;
@@ -17,17 +13,12 @@ static char *parse_value(char *line, const char *key)
     if (!eq)
         return (NULL);
     eq++;
-    /* Supprime le '\n' en fin */
     int len = strlen(eq);
     if (len > 0 && eq[len - 1] == '\n')
         eq[len - 1] = '\0';
     return (eq);
 }
 
-/*
-** Charge un fichier .obj et remplit une t_obj_def.
-** Retourne 0 si succès, -1 si erreur.
-*/
 static int load_obj_file(t_game *game, t_obj_def *def, const char *path)
 {
     FILE    *f;
@@ -41,21 +32,16 @@ static int load_obj_file(t_game *game, t_obj_def *def, const char *path)
         fprintf(stderr, "Cannot open %s\n", path);
         return (-1);
     }
-
-    /* Valeurs par défaut */
     memset(def, 0, sizeof(t_obj_def));
     def->width        = 1.0f;
     def->height_base  = 1.0f;
     def->height_extra = 0.0f;
     def->extra_width  = 0.0f;
     def->spawn_chance = 5;
-
     while (fgets(buf, sizeof(buf), f))
     {
-        /* Ignore commentaires et lignes vides */
         if (buf[0] == '#' || buf[0] == '\n')
             continue ;
-
         if ((val = parse_value(buf, "name")))
             strncpy(def->name, val, sizeof(def->name) - 1);
         else if ((val = parse_value(buf, "texture_base")) && val[0])
@@ -84,10 +70,6 @@ static int load_obj_file(t_game *game, t_obj_def *def, const char *path)
     return (0);
 }
 
-/*
-** Charge tous les fichiers .obj du dossier objects/.
-** Remplit game->obj_defs[] et game->obj_def_count.
-*/
 int load_obj_defs(t_game *game)
 {
     DIR             *dir;
@@ -106,7 +88,6 @@ int load_obj_defs(t_game *game)
         && game->obj_def_count < MAX_OBJ_DEFS)
     {
         len = strlen(entry->d_name);
-        /* Charge uniquement les fichiers .obj */
         if (len > 4 && strcmp(entry->d_name + len - 4, ".obj") == 0)
         {
             snprintf(path, sizeof(path), "objects/%s", entry->d_name);

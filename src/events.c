@@ -17,19 +17,29 @@ static void rotate(t_player *p, float angle)
     p->dir_y    =  old_dir_x  * sinf(angle) + p->dir_y   * cosf(angle);
     p->plane_x  =  p->plane_x * cosf(angle) - p->plane_y * sinf(angle);
     p->plane_y  =  old_plane_x * sinf(angle) + p->plane_y * cosf(angle);
+    p->yaw     += angle;
 }
 
 static void apply_gravity(t_game *game)
 {
     t_player    *p;
+    float       surf;
     float       floor_z;
 
-    p       = &game->player;
-    floor_z = world_get_height(&game->world,
-        (int)floorf(p->x), (int)floorf(p->y)) + PLAYER_HEIGHT;
+    p = &game->player;
+    /*
+    ** On utilise floorf() sur la hauteur de surface pour que
+    ** le sol soit toujours à un niveau entier — évite le glissement
+    ** progressif dû aux valeurs flottantes du Perlin noise.
+    */
+    surf    = floorf(world_get_height(&game->world,
+                (int)floorf(p->x), (int)floorf(p->y)));
+    floor_z = surf + PLAYER_HEIGHT;
+
     p->vel_z -= MC_GRAVITY;
     p->vel_z *= MC_DRAG;
     p->z     += p->vel_z;
+
     if (p->z <= floor_z)
     {
         p->z         = floor_z;
@@ -41,10 +51,8 @@ static void apply_gravity(t_game *game)
 }
 
 /*
-** z_offset : decalage visuel vertical.
-** On n'utilise PAS la difference de hauteur terrain ici —
-** cela causait l'inversion. z_offset = 0 quand on marche normalement.
-** Seulement pendant le saut et le sneak.
+** z_offset : décalage visuel vertical (bob + sneak).
+** Exprimé en radians de pitch supplémentaire.
 */
 static void update_z_offset(t_game *game)
 {
@@ -102,8 +110,8 @@ static void toggle_inventory(t_game *game)
     }
     else
     {
-        SDL_ShowCursor(SDL_DISABLE);
         SDL_SetRelativeMouseMode(SDL_TRUE);
+        SDL_ShowCursor(SDL_DISABLE);
     }
 }
 
@@ -128,33 +136,101 @@ void move_player(t_game *game)
     spd      = p->sneaking ? MC_SNEAK_SPEED : MC_WALK_SPEED;
     strafe_x =  p->dir_y;
     strafe_y = -p->dir_x;
-    if (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP])
+    /*
+    ** Déplacement avec step-up automatique (max 1 bloc).
+    ** Si la tuile devant est plus haute d'au plus 1 bloc et
+    ** que le joueur est au sol, on monte automatiquement.
+    */
     {
-        if (!is_wall(game, p->x + p->dir_x * spd, p->y))
-            p->x += p->dir_x * spd;
-        if (!is_wall(game, p->x, p->y + p->dir_y * spd))
-            p->y += p->dir_y * spd;
-    }
-    if (keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN])
-    {
-        if (!is_wall(game, p->x - p->dir_x * spd, p->y))
-            p->x -= p->dir_x * spd;
-        if (!is_wall(game, p->x, p->y - p->dir_y * spd))
-            p->y -= p->dir_y * spd;
-    }
-    if (keys[SDL_SCANCODE_A])
-    {
-        if (!is_wall(game, p->x - strafe_x * spd, p->y))
-            p->x -= strafe_x * spd;
-        if (!is_wall(game, p->x, p->y - strafe_y * spd))
-            p->y -= strafe_y * spd;
-    }
-    if (keys[SDL_SCANCODE_D])
-    {
-        if (!is_wall(game, p->x + strafe_x * spd, p->y))
-            p->x += strafe_x * spd;
-        if (!is_wall(game, p->x, p->y + strafe_y * spd))
-            p->y += strafe_y * spd;
+        float nx, ny;
+        float cur_surf, new_surf;
+        cur_surf = floorf(world_get_height(&game->world,
+            (int)floorf(p->x), (int)floorf(p->y)));
+
+        if (keys[SDL_SCANCODE_W] || keys[SDL_SCANCODE_UP])
+        {
+            nx = p->x + p->dir_x * spd;
+            ny = p->y + p->dir_y * spd;
+            if (!is_wall(game, nx, p->y))
+            {
+                new_surf = floorf(world_get_height(&game->world,
+                    (int)floorf(nx), (int)floorf(p->y)));
+                if (p->on_ground && new_surf - cur_surf <= 1.0f && new_surf - cur_surf > 0.0f)
+                    p->vel_z = 0.12f;
+                p->x = nx;
+            }
+            if (!is_wall(game, p->x, ny))
+            {
+                new_surf = floorf(world_get_height(&game->world,
+                    (int)floorf(p->x), (int)floorf(ny)));
+                if (p->on_ground && new_surf - cur_surf <= 1.0f && new_surf - cur_surf > 0.0f)
+                    p->vel_z = 0.12f;
+                p->y = ny;
+            }
+        }
+        if (keys[SDL_SCANCODE_S] || keys[SDL_SCANCODE_DOWN])
+        {
+            nx = p->x - p->dir_x * spd;
+            ny = p->y - p->dir_y * spd;
+            if (!is_wall(game, nx, p->y))
+            {
+                new_surf = floorf(world_get_height(&game->world,
+                    (int)floorf(nx), (int)floorf(p->y)));
+                if (p->on_ground && new_surf - cur_surf <= 1.0f && new_surf - cur_surf > 0.0f)
+                    p->vel_z = 0.12f;
+                p->x = nx;
+            }
+            if (!is_wall(game, p->x, ny))
+            {
+                new_surf = floorf(world_get_height(&game->world,
+                    (int)floorf(p->x), (int)floorf(ny)));
+                if (p->on_ground && new_surf - cur_surf <= 1.0f && new_surf - cur_surf > 0.0f)
+                    p->vel_z = 0.12f;
+                p->y = ny;
+            }
+        }
+        if (keys[SDL_SCANCODE_A])
+        {
+            nx = p->x - strafe_x * spd;
+            ny = p->y - strafe_y * spd;
+            if (!is_wall(game, nx, p->y))
+            {
+                new_surf = floorf(world_get_height(&game->world,
+                    (int)floorf(nx), (int)floorf(p->y)));
+                if (p->on_ground && new_surf - cur_surf <= 1.0f && new_surf - cur_surf > 0.0f)
+                    p->vel_z = 0.12f;
+                p->x = nx;
+            }
+            if (!is_wall(game, p->x, ny))
+            {
+                new_surf = floorf(world_get_height(&game->world,
+                    (int)floorf(p->x), (int)floorf(ny)));
+                if (p->on_ground && new_surf - cur_surf <= 1.0f && new_surf - cur_surf > 0.0f)
+                    p->vel_z = 0.12f;
+                p->y = ny;
+            }
+        }
+        if (keys[SDL_SCANCODE_D])
+        {
+            nx = p->x + strafe_x * spd;
+            ny = p->y + strafe_y * spd;
+            if (!is_wall(game, nx, p->y))
+            {
+                new_surf = floorf(world_get_height(&game->world,
+                    (int)floorf(nx), (int)floorf(p->y)));
+                if (p->on_ground && new_surf - cur_surf <= 1.0f && new_surf - cur_surf > 0.0f)
+                    p->vel_z = 0.12f;
+                p->x = nx;
+            }
+            if (!is_wall(game, p->x, ny))
+            {
+                new_surf = floorf(world_get_height(&game->world,
+                    (int)floorf(p->x), (int)floorf(ny)));
+                if (p->on_ground && new_surf - cur_surf <= 1.0f && new_surf - cur_surf > 0.0f)
+                    p->vel_z = 0.12f;
+                p->y = ny;
+            }
+        }
     }
     if (keys[SDL_SCANCODE_LEFT])  rotate(p,  ROT_SPEED);
     if (keys[SDL_SCANCODE_RIGHT]) rotate(p, -ROT_SPEED);
@@ -168,26 +244,39 @@ void move_player(t_game *game)
     update_bob(game);
 }
 
+/*
+** Gestion souris :
+** - Rotation horizontale → yaw (rotate player dir)
+** - Regard vertical → pitch en radians limité à ±PI/2.5
+*/
 static void handle_mouse(t_game *game, int xrel, int yrel)
 {
     t_player    *p;
-    float       limit;
+    float       pitch_limit;
 
     if (game->player.inv_open)
     {
         game->steve_mouse_dx += xrel;
         return ;
     }
-    p     = &game->player;
-    limit = (float)game->screen_h / 4.0f;
+    p           = &game->player;
+    pitch_limit = (float)M_PI / 2.5f;
+
     if (xrel != 0)
         rotate(p, -(float)xrel * MOUSE_SENS);
     if (yrel != 0)
     {
+        /*
+        ** pitch stocké en "pixels d'offset" pour r3d_begin_frame()
+        ** qui le convertit en angle via tanf().
+        ** On limite à ±(screen_h/4) pixels.
+        */
+        float limit = (float)game->screen_h / 4.0f * (float)M_PI;
         p->pitch -= (float)yrel * MOUSE_SENS * 400.0f;
         if (p->pitch >  limit) p->pitch =  limit;
         if (p->pitch < -limit) p->pitch = -limit;
     }
+    (void)pitch_limit;
 }
 
 void handle_events(t_game *game)

@@ -1,5 +1,21 @@
 #include "cub3d.h"
 
+/* ============================================================
+** render.c — Rendu 3D du monde en vraie 3D
+**
+** Architecture :
+**   1. prefill_sky()    : dégradé ciel
+**   2. r3d_begin_frame() : matrices vue/projection
+**   3. render_terrain() : parcoure les chunks visibles,
+**                         rasterise chaque face de bloc en quad 3D :
+**                         - Face TOP   : dessus du terrain (herbe/terre)
+**                         - Face SIDE  : flancs des falaises (terre/roche)
+**                         - Face WALL  : murs solides
+**                         - Blocs 3D arbres : troncs + feuilles
+**   4. render_objects() : rochers billboard
+**   5. HUD
+** ============================================================ */
+
 void put_pixel(t_game *game, int x, int y, Uint32 color)
 {
     if (x < 0 || x >= game->screen_w) return ;
@@ -12,117 +28,27 @@ Uint32 make_color(Uint8 r, Uint8 g, Uint8 b)
     return (0xFF000000 | ((Uint32)r << 16) | ((Uint32)g << 8) | (Uint32)b);
 }
 
-static int get_horizon(t_game *game)
-{
-    return (game->screen_h / 2
-        + (int)game->player.pitch
-        + (int)game->player.z_offset
-        + (int)game->player.bob_offset);
-}
-
-static float get_scale(t_game *game)
-{
-    return ((float)game->screen_w / (2.0f * game->player.plane_x));
-}
-
-static int project_y(float h, float pz, float dist, int horizon, float scale)
-{
-    if (dist < 0.001f) return horizon;
-    return (horizon - (int)((h - pz) * scale / dist));
-}
-
-static Uint32 apply_fog(Uint32 color, float fog)
-{
-    Uint8 r;
-    Uint8 g;
-    Uint8 b;
-
-    if (fog <= 0.0f) return color;
-    r = (color >> 16) & 0xFF;
-    g = (color >> 8)  & 0xFF;
-    b =  color        & 0xFF;
-    r = (Uint8)(r * (1.0f - fog) + 180 * fog);
-    g = (Uint8)(g * (1.0f - fog) + 210 * fog);
-    b = (Uint8)(b * (1.0f - fog) + 255 * fog);
-    return (make_color(r, g, b));
-}
-
-static Uint32 sample_tex(t_tex *tex, float u, float v)
-{
-    int sx;
-    int sy;
-
-    if (!tex->pixels) return (0xFF808080);
-    sx = (int)(u * (float)tex->w) % tex->w;
-    sy = (int)(v * (float)tex->h) % tex->h;
-    if (sx < 0) sx += tex->w;
-    if (sy < 0) sy += tex->h;
-    if (sx >= tex->w) sx = tex->w - 1;
-    if (sy >= tex->h) sy = tex->h - 1;
-    /* Forcer alpha a 0xFF : nos textures sol sont opaques */
-    return (tex->pixels[sy * tex->w + sx] | 0xFF000000u);
-}
-
-/*
-** Dessine une tranche verticale texturée [y0..y1].
-** Respecte l'alpha : pixels transparents (alpha < 16) sont ignorés.
-*/
-static void draw_vspan(t_game *game, int x, int y0, int y1,
-    float u, t_tex *tex, float fog)
-{
-    int    y;
-    float  v;
-    Uint32 color;
-
-    if (y0 < 0)               y0 = 0;
-    if (y1 >= game->screen_h) y1 = game->screen_h - 1;
-    if (y0 > y1)              return ;
-    y = y0;
-    while (y <= y1)
-    {
-        v     = (float)(y - y0) / (float)(y1 - y0 + 1);
-        color = sample_tex(tex, u, v);
-        if (((color >> 24) & 0xFF) >= 16)
-            put_pixel(game, x, y, apply_fog(color, fog));
-        y++;
-    }
-}
-
-
-static t_tex *pick_side_tex(t_game *game, int face_lv, int surf_h)
-{
-    int depth;
-
-    depth = surf_h - face_lv - 1;
-    if (depth <= 0) return (&game->tex[TEX_GRASS]);
-    if (depth < 4)  return (&game->tex[TEX_DIRT]);
-    return (&game->tex[TEX_STONE]);
-}
-
-/*
-** Passe 1 : remplir uniquement le CIEL.
-** Le bas de l'écran (y >= horizon) reste noir →
-** les colonnes terrain le rempliront avec la bonne couleur.
-*/
+/* ────────────────────────────────────────────────────────────
+** Ciel : dégradé vertical
+** ──────────────────────────────────────────────────────────── */
 static void prefill_sky(t_game *game)
 {
     int     x;
     int     y;
-    int     horizon;
     float   t;
     Uint8   r;
     Uint8   g;
     Uint8   b;
+    int     total;
 
-    horizon = get_horizon(game);
-    /* Remplir tout en noir d'abord */
-    memset(game->pixels, 0,
-        (size_t)(game->screen_w * game->screen_h) * sizeof(Uint32));
-    /* Puis peindre le ciel */
+    total = game->screen_w * game->screen_h;
+    /* Remplir tout en noir d'abord (zones sol non atteintes) */
+    memset(game->pixels, 0, (size_t)total * sizeof(Uint32));
+    /* Initialiser zbuf à +infini */
     y = 0;
-    while (y < horizon && y < game->screen_h)
+    while (y < game->screen_h)
     {
-        t = (float)y / (float)(game->screen_h > 0 ? game->screen_h : 1);
+        t = (float)y / (float)game->screen_h;
         r = (Uint8)(100 + t * 55);
         g = (Uint8)(160 + t * 50);
         b = (Uint8)(230 + t * 20);
@@ -137,213 +63,378 @@ static void prefill_sky(t_game *game)
     }
 }
 
-/*
-** Rendu d'une colonne complète :
-**
-** 1. DDA tile par tile le long du rayon
-** 2. Blocs 3D (arbres) : tronc + feuilles niveau par niveau
-** 3. Faces SIDE entre niveaux différents (falaises, montées)
-** 4. A la fin, remplir [y_floor..screen_h] avec la couleur du sol
-**    → herbe, terre ou roche selon la profondeur
-**
-** PAS de draw_vspan pour la face TOP : le dessus des blocs est rendu
-** par le floor casting implicite (couleur sol à y_floor).
-*/
-static void render_col(t_game *game, int x)
+/* ────────────────────────────────────────────────────────────
+** Utilitaires : calcul du brouillard + sélection texture
+** ──────────────────────────────────────────────────────────── */
+static float fog_at(t_game *game, float wx, float wy)
 {
-    float   cam_x;
-    float   rdx;
-    float   rdy;
-    float   ddx;
-    float   ddy;
-    float   sdx;
-    float   sdy;
-    int     mx;
-    int     my;
-    int     sx_s;
-    int     sy_s;
-    int     side;
-    float   dist;
-    float   wall_x;
-    float   scale;
-    float   fog;
-    int     horizon;
-    int     y_floor;
-    int     curr_h;
-    int     prev_h;
-    int     h;
-    int     yt;
-    int     yb;
-    int     steps;
-    int     btype;
-    int     bz;
-    int     base_h;
+    float dx;
+    float dy;
+    float dist;
+    float fog;
 
-    horizon = get_horizon(game);
-    scale   = get_scale(game);
-    cam_x   = 2.0f * (float)x / (float)game->screen_w - 1.0f;
-    rdx     = game->player.dir_x + game->player.plane_x * cam_x;
-    rdy     = game->player.dir_y + game->player.plane_y * cam_x;
-    mx      = (int)floorf(game->player.x);
-    my      = (int)floorf(game->player.y);
-    ddx     = (rdx == 0.0f) ? 1e30f : fabsf(1.0f / rdx);
-    ddy     = (rdy == 0.0f) ? 1e30f : fabsf(1.0f / rdy);
-    if (rdx < 0) { sx_s = -1; sdx = (game->player.x - mx) * ddx; }
-    else         { sx_s =  1; sdx = (mx + 1.0f - game->player.x) * ddx; }
-    if (rdy < 0) { sy_s = -1; sdy = (game->player.y - my) * ddy; }
-    else         { sy_s =  1; sdy = (my + 1.0f - game->player.y) * ddy; }
+    dx   = wx - game->player.x;
+    dy   = wy - game->player.y;
+    dist = sqrtf(dx * dx + dy * dy);
+    fog  = (dist - 3.0f) / (MAX_DIST - 3.0f);
+    if (fog < 0.0f) fog = 0.0f;
+    if (fog > 1.0f) fog = 1.0f;
+    return (fog);
+}
 
-    y_floor  = horizon;
-    prev_h   = (int)floorf(world_get_height(&game->world,
-                    (int)floorf(game->player.x),
-                    (int)floorf(game->player.y)));
-    steps    = 0;
+static t_tex *pick_top_tex(t_game *game, float depth)
+{
+    if (depth < 0.5f)  return &game->tex[TEX_GRASS];
+    if (depth < 4.0f)  return &game->tex[TEX_DIRT];
+    return &game->tex[TEX_STONE];
+}
 
-    while (steps < (int)(MAX_DIST * 2 + 4))
-    {
-        if (sdx < sdy) { sdx += ddx; mx += sx_s; side = 0; }
-        else           { sdy += ddy; my += sy_s; side = 1; }
-        dist = (side == 0) ? sdx - ddx : sdy - ddy;
-        if (dist > MAX_DIST) break ;
-        if (dist < 0.05f) { steps++; continue ; }
+static t_tex *pick_side_tex_depth(t_game *game, int level, int surf)
+{
+    int depth;
+    depth = surf - level - 1;
+    if (depth <= 0)  return &game->tex[TEX_GRASS];
+    if (depth < 4)   return &game->tex[TEX_DIRT];
+    return &game->tex[TEX_STONE];
+}
 
-        if (side == 0) wall_x = game->player.y + dist * rdy;
-        else           wall_x = game->player.x + dist * rdx;
-        wall_x -= floorf(wall_x);
+/* ────────────────────────────────────────────────────────────
+** Rendu de la face TOP d'une tile (plan horizontal)
+**
+** La tile va de (wx, wy) à (wx+1, wy+1) en espace carte.
+** En espace vue :  x←wx,  y←h,  z←wy
+**
+** UVs world-space : u = frac(wx), v = frac(wy)
+** → la texture est alignée sur la grille monde, toujours statique.
+** ──────────────────────────────────────────────────────────── */
+static void render_tile_top(t_game *game, int wx, int wy, float h,
+    t_tex *tex, float fog)
+{
+    t_vec3  p0, p1, p2, p3;
+    float   fy;
 
-        fog = (dist - 3.0f) / (MAX_DIST - 3.0f);
-        if (fog < 0.0f) fog = 0.0f;
-        if (fog > 1.0f) fog = 1.0f;
-    
-        /* Blocs 3D (arbres) à cette position */
-        if (world_get_tile(&game->world, mx, my) != TILE_WALL)
-        {
-            base_h = (int)floorf(world_get_height(&game->world, mx, my));
-            bz = base_h + 1;
-            while (bz <= base_h + 8)
-            {
-                btype = world_get_block(&game->world, mx, my, bz);
-                if (btype != BTYPE_AIR)
-                {
-                    t_tex *btex = (btype == BTYPE_TRUNK)
-                        ? &game->tex[TEX_TRUNK]
-                        : &game->tex[TEX_LEAF];
-                    yt = project_y((float)(bz + 1), game->player.z,
-                        dist, horizon, scale);
-                    yb = project_y((float)bz, game->player.z,
-                        dist, horizon, scale);
-                    if (yb > y_floor) yb = y_floor;
-                    if (yt < yb)
-                    {
-                        draw_vspan(game, x, yt, yb, wall_x, btex, fog);
-                    }
-                }
-                bz++;
-            }
-        }
-
-        curr_h = (int)floorf(world_get_height(&game->world, mx, my));
-    
-        /* Mur solide : 4 blocs de hauteur */
-        if (world_get_tile(&game->world, mx, my) == TILE_WALL)
-        {
-            int wtop = curr_h + 4;
-            yt = project_y((float)wtop,   game->player.z, dist, horizon, scale);
-            yb = project_y((float)curr_h, game->player.z, dist, horizon, scale);
-            if (yb > y_floor) yb = y_floor;
-            if (yt < yb)
-            {
-                t_tex *tex = (side == 0) ? &game->tex[TEX_WALL_NS]
-                                         : &game->tex[TEX_WALL_EO];
-                draw_vspan(game, x, yt, yb, wall_x, tex, fog);
-                y_floor = yt;
-            }
-            game->zbuf[x] = dist;
-                    break ;
-        }
-
-        /* Faces SIDE entre niveaux */
-        if (curr_h != prev_h)
-        {
-            int lo = (curr_h < prev_h) ? curr_h : prev_h;
-            int hi = (curr_h > prev_h) ? curr_h : prev_h;
-            h = lo;
-            while (h < hi)
-            {
-                yt = project_y((float)(h + 1), game->player.z,
-                    dist, horizon, scale);
-                yb = project_y((float)h, game->player.z,
-                    dist, horizon, scale);
-                if (yb > y_floor) yb = y_floor;
-                if (yt < yb)
-                {
-                    draw_vspan(game, x, yt, yb, wall_x,
-                        pick_side_tex(game, h, hi), fog);
-                    if (yt < y_floor) y_floor = yt;
-                }
-                h++;
-            }
-            if (curr_h > prev_h)
-            {
-                game->zbuf[x] = dist;
-                break ;
-            }
-        }
-
-        /* Mettre à jour y_floor avec le sommet du terrain courant */
-        yt = project_y((float)(curr_h + 1), game->player.z,
-            dist, horizon, scale);
-        if (yt < y_floor) y_floor = yt;
-
-        game->zbuf[x] = dist;
-        prev_h = curr_h;
-        steps++;
-    }
+    fy = floorf(h);
 
     /*
-    ** Remplir la zone sol [y_floor..screen_h] avec la texture herbe/terre/roche.
-    ** On utilise la couleur de la dernière tile visible.
-    ** depth = player.z - last_h détermine la couche.
+    ** Face horizontale (sol vu de dessus).
+    ** Convention UV : u=0..1 selon X monde, v=0..1 selon Z(=Y carte) monde.
+    ** p0=(wx,  wy  ) u=0,v=0
+    ** p1=(wx+1,wy  ) u=1,v=0
+    ** p2=(wx+1,wy+1) u=1,v=1
+    ** p3=(wx,  wy+1) u=0,v=1
+    ** On passe en deux triangles avec UVs explicites par sommet.
     */
-    if (y_floor < game->screen_h)
-    {
-        int y;
+    p0 = (t_vec3){ (float)wx,       fy, (float)wy       };
+    p1 = (t_vec3){ (float)(wx + 1), fy, (float)wy       };
+    p2 = (t_vec3){ (float)(wx + 1), fy, (float)(wy + 1) };
+    p3 = (t_vec3){ (float)wx,       fy, (float)(wy + 1) };
 
-        y = y_floor;
-        while (y < game->screen_h)
+    /* tri1 : p0(0,0), p1(1,0), p2(1,1) */
+    r3d_draw_quad(game, p0, p1, p2, p3,
+        0.0f, 0.0f, 1.0f, 1.0f,
+        tex, fog, 1);
+}
+
+/* ────────────────────────────────────────────────────────────
+** Rendu d'une face SIDE entre deux niveaux h_lo et h_hi
+** sur le bord est (direction +X monde)
+** ──────────────────────────────────────────────────────────── */
+static void render_side_x(t_game *game,
+    float x0, float wy, float h_lo, float h_hi,
+    t_tex *tex, float fog)
+{
+    t_vec3  p0, p1, p2, p3;
+    float   lo;
+    float   hi;
+
+    lo = (float)h_lo;
+    hi = (float)h_hi;
+
+    p0 = (t_vec3){ x0, lo, (float)wy       };
+    p1 = (t_vec3){ x0, lo, (float)(wy + 1) };
+    p2 = (t_vec3){ x0, hi, (float)(wy + 1) };
+    p3 = (t_vec3){ x0, hi, (float)wy       };
+
+    r3d_draw_quad(game, p0, p1, p2, p3,
+        0.0f, 0.0f, 1.0f, 1.0f,
+        tex, fog, 0);
+}
+
+static void render_side_z(t_game *game,
+    float wx, float z0, float h_lo, float h_hi,
+    t_tex *tex, float fog)
+{
+    t_vec3  p0, p1, p2, p3;
+    float   lo;
+    float   hi;
+
+    lo = (float)h_lo;
+    hi = (float)h_hi;
+
+    p0 = (t_vec3){ (float)wx,       lo, z0 };
+    p1 = (t_vec3){ (float)(wx + 1), lo, z0 };
+    p2 = (t_vec3){ (float)(wx + 1), hi, z0 };
+    p3 = (t_vec3){ (float)wx,       hi, z0 };
+
+    r3d_draw_quad(game, p0, p1, p2, p3,
+        0.0f, 0.0f, 1.0f, 1.0f,
+        tex, fog, 0);
+}
+
+/* ────────────────────────────────────────────────────────────
+** Rendu d'un bloc 3D (arbre : tronc ou feuilles)
+** Un bloc occupe (wx, wy, bz) à (wx+1, wy+1, bz+1)
+** ──────────────────────────────────────────────────────────── */
+static void render_block_3d(t_game *game, int wx, int wy, int bz,
+    t_tex *tex, float fog)
+{
+    t_vec3  p[8];
+    float   x0, x1, y0, y1, z0, z1;
+
+    x0 = (float)wx;       x1 = x0 + 1.0f;
+    y0 = (float)bz;       y1 = y0 + 1.0f;   /* altitude */
+    z0 = (float)wy;       z1 = z0 + 1.0f;
+
+    /* 8 coins du cube */
+    p[0] = (t_vec3){x0, y0, z0};
+    p[1] = (t_vec3){x1, y0, z0};
+    p[2] = (t_vec3){x1, y0, z1};
+    p[3] = (t_vec3){x0, y0, z1};
+    p[4] = (t_vec3){x0, y1, z0};
+    p[5] = (t_vec3){x1, y1, z0};
+    p[6] = (t_vec3){x1, y1, z1};
+    p[7] = (t_vec3){x0, y1, z1};
+
+    /* Toutes les faces : UVs 0..1 */
+    r3d_draw_quad(game, p[4], p[5], p[6], p[7], 0.f,0.f,1.f,1.f, tex, fog, 0);
+    r3d_draw_quad(game, p[0], p[1], p[5], p[4], 0.f,0.f,1.f,1.f, tex, fog, 0);
+    r3d_draw_quad(game, p[2], p[3], p[7], p[6], 0.f,0.f,1.f,1.f, tex, fog, 0);
+    r3d_draw_quad(game, p[3], p[0], p[4], p[7], 0.f,0.f,1.f,1.f, tex, fog, 0);
+    r3d_draw_quad(game, p[1], p[2], p[6], p[5], 0.f,0.f,1.f,1.f, tex, fog, 0);
+}
+
+/* ────────────────────────────────────────────────────────────
+** Rendu d'un mur solide (TILE_WALL)
+** Le mur fait 4 blocs de haut.
+** ──────────────────────────────────────────────────────────── */
+static void render_wall(t_game *game, int wx, int wy, float h, float fog)
+{
+    t_vec3  p[8];
+    float   x0, x1, y0, y1, z0, z1;
+
+    x0 = (float)wx;   x1 = x0 + 1.0f;
+    y0 = (float)h;    y1 = y0 + 4.0f;
+    z0 = (float)wy;   z1 = z0 + 1.0f;
+
+    p[0] = (t_vec3){x0, y0, z0};
+    p[1] = (t_vec3){x1, y0, z0};
+    p[2] = (t_vec3){x1, y0, z1};
+    p[3] = (t_vec3){x0, y0, z1};
+    p[4] = (t_vec3){x0, y1, z0};
+    p[5] = (t_vec3){x1, y1, z0};
+    p[6] = (t_vec3){x1, y1, z1};
+    p[7] = (t_vec3){x0, y1, z1};
+
+    r3d_draw_quad(game, p[4], p[5], p[6], p[7], 0.f,0.f,1.f,1.f, &game->tex[TEX_WALL_NS], fog, 0);
+    r3d_draw_quad(game, p[0], p[1], p[5], p[4], 0.f,0.f,1.f,1.f, &game->tex[TEX_WALL_NS], fog, 0);
+    r3d_draw_quad(game, p[2], p[3], p[7], p[6], 0.f,0.f,1.f,1.f, &game->tex[TEX_WALL_NS], fog, 0);
+    r3d_draw_quad(game, p[3], p[0], p[4], p[7], 0.f,0.f,1.f,1.f, &game->tex[TEX_WALL_EO], fog, 0);
+    r3d_draw_quad(game, p[1], p[2], p[6], p[5], 0.f,0.f,1.f,1.f, &game->tex[TEX_WALL_EO], fog, 0);
+}
+
+/* ────────────────────────────────────────────────────────────
+** Rendu du terrain complet
+** On itère sur les chunks chargés, tile par tile.
+** Pour chaque tile :
+**   - Face TOP
+**   - Faces SIDE avec les voisins (falaises)
+**   - Blocs 3D (arbres)
+**   - Murs
+** ──────────────────────────────────────────────────────────── */
+static int in_range(t_game *game, int wx, int wy)
+{
+    float dx;
+    float dy;
+    dx = (float)wx + 0.5f - game->player.x;
+    dy = (float)wy + 0.5f - game->player.y;
+    return (dx * dx + dy * dy < MAX_DIST * MAX_DIST);
+}
+
+static void render_terrain(t_game *game)
+{
+    int         ci;
+    int         lx;
+    int         ly;
+    int         wx;
+    int         wy;
+    float       h;
+    float       h_n;  /* voisin nord */
+    float       h_s;
+    float       h_e;
+    float       h_w;
+    float       fog;
+    t_chunk     *chunk;
+    int         bz;
+    int         btype;
+    t_tex       *btex;
+    float       depth;
+
+    ci = 0;
+    while (ci < MAX_CHUNKS)
+    {
+        if (!game->world.chunks[ci].loaded
+            || !game->world.chunks[ci].tiles_ready)
         {
-            put_pixel(game, x, y, 0xFF111111u);
-            y++;
+            ci++;
+            continue ;
         }
+        chunk = &game->world.chunks[ci];
+        ly = 0;
+        while (ly < CHUNK_SIZE)
+        {
+            lx = 0;
+            while (lx < CHUNK_SIZE)
+            {
+                wx = chunk->cx * CHUNK_SIZE + lx;
+                wy = chunk->cy * CHUNK_SIZE + ly;
+
+                /* Frustum simple : distance max */
+                if (!in_range(game, wx, wy))
+                {
+                    lx++;
+                    continue ;
+                }
+
+                h   = chunk->height[ly][lx];
+                fog = fog_at(game, (float)wx + 0.5f, (float)wy + 0.5f);
+
+                /* ── MURS ── */
+                if (chunk->tiles[ly][lx] == TILE_WALL)
+                {
+                    render_wall(game, wx, wy, h, fog);
+                    lx++;
+                    continue ;
+                }
+
+                /* ── TOP ── */
+                depth = game->player.z - h;
+                render_tile_top(game, wx, wy, floorf(h),
+                    pick_top_tex(game, depth), fog);
+
+                /* ── SIDES (falaises) ── */
+                /* Est : voisin (wx+1, wy) */
+                h_e = world_get_height(&game->world, wx + 1, wy);
+                if ((int)h_e > (int)h)
+                {
+                    int lo = (int)h;
+                    int hi = (int)h_e;
+                    int lv;
+                    lv = lo;
+                    while (lv < hi)
+                    {
+                        render_side_x(game, (float)(wx + 1),
+                            wy, lv, lv + 1,
+                            pick_side_tex_depth(game, lv, hi), fog);
+                        lv++;
+                    }
+                }
+                /* Ouest : voisin (wx-1, wy) */
+                h_w = world_get_height(&game->world, wx - 1, wy);
+                if ((int)h_w > (int)h)
+                {
+                    int lo = (int)h;
+                    int hi = (int)h_w;
+                    int lv = lo;
+                    while (lv < hi)
+                    {
+                        render_side_x(game, (float)wx,
+                            wy, lv, lv + 1,
+                            pick_side_tex_depth(game, lv, hi), fog);
+                        lv++;
+                    }
+                }
+                /* Sud : voisin (wx, wy+1) */
+                h_s = world_get_height(&game->world, wx, wy + 1);
+                if ((int)h_s > (int)h)
+                {
+                    int lo = (int)h;
+                    int hi = (int)h_s;
+                    int lv = lo;
+                    while (lv < hi)
+                    {
+                        render_side_z(game, wx, (float)(wy + 1),
+                            lv, lv + 1,
+                            pick_side_tex_depth(game, lv, hi), fog);
+                        lv++;
+                    }
+                }
+                /* Nord : voisin (wx, wy-1) */
+                h_n = world_get_height(&game->world, wx, wy - 1);
+                if ((int)h_n > (int)h)
+                {
+                    int lo = (int)h;
+                    int hi = (int)h_n;
+                    int lv = lo;
+                    while (lv < hi)
+                    {
+                        render_side_z(game, wx, (float)wy,
+                            lv, lv + 1,
+                            pick_side_tex_depth(game, lv, hi), fog);
+                        lv++;
+                    }
+                }
+
+                /* ── BLOCS 3D (arbres) ── */
+                bz = (int)floorf(h) + 1;
+                while (bz <= (int)floorf(h) + 8)
+                {
+                    btype = world_get_block(&game->world, wx, wy, bz);
+                    if (btype != BTYPE_AIR)
+                    {
+                        btex = (btype == BTYPE_TRUNK)
+                            ? &game->tex[TEX_TRUNK]
+                            : &game->tex[TEX_LEAF];
+                        render_block_3d(game, wx, wy, bz, btex, fog);
+                    }
+                    bz++;
+                }
+
+                lx++;
+            }
+            ly++;
+        }
+        ci++;
     }
 }
 
+/* ────────────────────────────────────────────────────────────
+** Frame principale
+** ──────────────────────────────────────────────────────────── */
 void render_frame(t_game *game)
 {
-    int x;
     int i;
 
+    /* Réinitialiser zbuf à FAR_PLANE (distance max = opaque) */
     i = 0;
-    while (i < game->screen_w)
+    while (i < game->screen_w * game->screen_h)
     {
-        game->zbuf[i] = MAX_DIST;
+        game->zbuf[i] = FAR_PLANE;
         i++;
     }
 
-    /* Passe 1 : ciel seulement, bas = noir */
+    /* 1. Ciel */
     prefill_sky(game);
 
-    /* Passe 2 : terrain + arbres + sol par colonne */
-    x = 0;
-    while (x < game->screen_w)
-    {
-        render_col(game, x);
-        x++;
-    }
+    /* 2. Matrices 3D */
+    r3d_begin_frame(game);
 
-    /* Passe 3 : objets billboard */
+    /* 3. Terrain + arbres */
+    render_terrain(game);
+
+    /* 4. Objets billboard */
     render_objects(game);
 
+    /* 5. Présentation */
     SDL_UpdateTexture(game->framebuf, NULL, game->pixels,
         game->screen_w * sizeof(Uint32));
     SDL_RenderCopy(game->renderer, game->framebuf, NULL, NULL);

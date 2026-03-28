@@ -1,12 +1,23 @@
-NAME    = cub3d
+NAME    = cub3d_game
 CC      = gcc
-CFLAGS  = -Wall -Wextra -Werror -I./include
+CFLAGS  = -Wall -Wextra -Werror -O2 -I./include
 LDFLAGS = $(shell sdl2-config --libs) -lSDL2_image -lSDL2_mixer -lSDL2_ttf -lm
 
-SRCS    = src/main.c src/init.c src/worldgen.c src/map.c src/render.c \
-          src/events.c src/keybind.c \
-          src/textures.c src/hud.c src/player3d.c \
-          src/objects.c src/obj_loader.c
+SRCS    = src/main.c      \
+          src/init.c      \
+          src/worldgen.c  \
+          src/map.c       \
+          src/math3d.c    \
+          src/raster3d.c  \
+          src/render.c    \
+          src/events.c    \
+          src/keybind.c   \
+          src/textures.c  \
+          src/hud.c       \
+          src/player3d.c  \
+          src/objects.c   \
+          src/obj_loader.c
+
 OBJS    = $(SRCS:.c=.o)
 
 all: $(NAME)

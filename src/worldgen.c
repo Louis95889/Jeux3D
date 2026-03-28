@@ -1,8 +1,5 @@
 #include "cub3d.h"
 
-/* ============================================================
-** Hash table O(1) pour find_chunk
-** ============================================================ */
 # define HT_SIZE 128
 # define HT_MASK (HT_SIZE - 1)
 # define HT_EMPTY -1
@@ -74,9 +71,6 @@ static int ht_find(t_world *world, int cx, int cy)
     return (-1);
 }
 
-/* ============================================================
-** Perlin noise
-** ============================================================ */
 static float wg_fade(float t)
 {
     return (t * t * t * (t * (t * 6.0f - 15.0f) + 10.0f));
@@ -146,9 +140,6 @@ static float wg_fbm(int *perm, float x, float y,
     return (val / mx);
 }
 
-/* ============================================================
-** Initialisation
-** ============================================================ */
 void world_init(t_world *world, int seed)
 {
     int         i;
@@ -201,9 +192,6 @@ void world_init(t_world *world, int seed)
     world->game_ptr = NULL;
 }
 
-/* ============================================================
-** Terrain + biomes
-** ============================================================ */
 static float calc_height_raw(t_world *world, int wx, int wy)
 {
     float base;
@@ -255,12 +243,6 @@ float world_get_height(t_world *world, int wx, int wy)
     return (calc_height_raw(world, wx, wy));
 }
 
-/*
-** world_get_block : retourne le type de bloc 3D à (wx, wy, z).
-** Cherche dans extra_blocks du chunk correspondant.
-** Utilisé par render.c pour les arbres.
-** Retourne BTYPE_AIR si rien, BTYPE_TRUNK/LEAF sinon.
-*/
 int world_get_block(t_world *world, int wx, int wy, int z)
 {
     int     cx;
@@ -287,10 +269,6 @@ int world_get_block(t_world *world, int wx, int wy, int z)
     return (BTYPE_AIR);
 }
 
-/* ============================================================
-** Génération d'un arbre Minecraft dans le chunk
-** Tronc : 4 blocs de haut, feuilles : 3x3x2 autour du sommet
-** ============================================================ */
 static void add_block(t_chunk *chunk, int wx, int wy, int z, int type)
 {
     if (chunk->nb_extra >= MAX_TREE_BLOCKS)
@@ -311,14 +289,12 @@ static void gen_tree(t_chunk *chunk, int wx, int wy, int base_z)
     int lz;
 
     trunk_h = 4;
-    /* Tronc : 4 blocs verticaux */
     i = 0;
     while (i < trunk_h)
     {
         add_block(chunk, wx, wy, base_z + i, BTYPE_TRUNK);
         i++;
     }
-    /* Feuilles : 3x3 autour des 2 derniers niveaux du tronc */
     lz = 0;
     while (lz < 2)
     {
@@ -337,14 +313,10 @@ static void gen_tree(t_chunk *chunk, int wx, int wy, int base_z)
         }
         lz++;
     }
-    /* Chapeau de feuilles (1 bloc au sommet) */
     add_block(chunk, wx, wy, base_z + trunk_h, BTYPE_LEAF);
     add_block(chunk, wx, wy, base_z + trunk_h + 1, BTYPE_LEAF);
 }
 
-/* ============================================================
-** Génération des tiles + grottes + arbres
-** ============================================================ */
 static void gen_chunk_tiles(t_world *world, t_chunk *chunk)
 {
     int   lx;
@@ -372,17 +344,10 @@ static void gen_chunk_tiles(t_world *world, t_chunk *chunk)
             hash   = hash % 100;
             detail = wg_fbm(world->perm, (float)wx, (float)wy,
                 2, 0.2f, 0.6f);
-            /*
-            ** Grottes : bruit 2D pour créer des ouvertures
-            ** Quand cave_n > 0.55 et hash pair → entrée de grotte
-            ** On marque la tile TILE_WALL mais avec height basse
-            ** pour simuler le creux visible
-            */
             cave_n = wg_fbm(world->perm2, (float)wx, (float)wy,
                 3, 0.08f, 0.5f);
             if (cave_n > 0.55f && hash < 15)
             {
-                /* Grotte : la surface s'effondre de 3-5 blocs */
                 chunk->height[ly][lx] = h - 3.0f - (cave_n - 0.55f) * 10.0f;
                 if (chunk->height[ly][lx] < Z_FLOOR + 2.0f)
                     chunk->height[ly][lx] = Z_FLOOR + 2.0f;
@@ -392,10 +357,6 @@ static void gen_chunk_tiles(t_world *world, t_chunk *chunk)
                 chunk->tiles[ly][lx] = TILE_WALL;
             else
                 chunk->tiles[ly][lx] = TILE_EMPTY;
-            /*
-            ** Arbres : forêt dense ou plaine rare
-            ** On génère un arbre si le hash le permet
-            */
             if (chunk->tiles[ly][lx] == TILE_EMPTY
                 && chunk->nb_extra + 20 < MAX_TREE_BLOCKS)
             {
@@ -404,7 +365,7 @@ static void gen_chunk_tiles(t_world *world, t_chunk *chunk)
                 if ((biome == 1 && tree_h < 20)
                     || (biome == 0 && tree_h < 3))
                     gen_tree(chunk, wx, wy,
-                        (int)chunk->height[ly][lx] + 1);
+                        (int)floorf(chunk->height[ly][lx]) + 1);
             }
             lx++;
         }
@@ -440,7 +401,6 @@ static void gen_chunk_objects(t_game *game, t_chunk *chunk)
             biome = world_get_biome(&game->world, wx, wy);
             hash  = ((wx * 31337) ^ (wy * 7919)) & 0x7FFFFFFF;
             hash  = hash % 100;
-            /* Rochers uniquement (les arbres sont en 3D maintenant) */
             if ((biome == 1 && hash < 4) || (biome == 0 && hash < 2))
             {
                 px = (float)wx + 0.5f;
@@ -462,9 +422,6 @@ static void gen_chunk_objects(t_game *game, t_chunk *chunk)
     }
 }
 
-/* ============================================================
-** Gestion pool de chunks
-** ============================================================ */
 static int find_chunk(t_world *world, int cx, int cy)
 {
     return (ht_find(world, cx, cy));

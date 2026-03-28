@@ -26,6 +26,10 @@
 # define Z_FLOOR         60.0f
 # define PLAYER_HEIGHT   1.8f
 
+# define FOV_DEG        70.0f
+# define NEAR_PLANE     0.1f
+# define FAR_PLANE      200.0f
+
 # define MAX_DIST       15.0f
 # define TEX_SIZE       64
 # define HOTBAR_SIZE    9
@@ -45,18 +49,13 @@
 # define MAX_CHUNKS      100
 # define MAX_TREE_BLOCKS 64
 
-/*
-** Types de blocs 3D (pour les arbres et grottes)
-** BTYPE_AIR   : vide
-** BTYPE_TRUNK : tronc de bois
-** BTYPE_LEAF  : feuilles
-** BTYPE_STONE : roche (plafond grotte)
-*/
+/* Block types */
 # define BTYPE_AIR   0
 # define BTYPE_TRUNK 1
 # define BTYPE_LEAF  2
 # define BTYPE_STONE 3
 
+/* Texture indices */
 # define TEX_WALL_NS  0
 # define TEX_WALL_EO  1
 # define TEX_GRASS    2
@@ -66,6 +65,7 @@
 # define TEX_LEAF     6
 # define TEX_COUNT    7
 
+/* Face count for Minecraft skin */
 typedef enum e_face
 {
     HEAD_FRONT=0, HEAD_BACK,  HEAD_RIGHT,  HEAD_LEFT,  HEAD_TOP,  HEAD_BOT,
@@ -75,6 +75,42 @@ typedef enum e_face
     LEG_L_FRONT,  LEG_L_BACK, LEG_L_RIGHT, LEG_L_LEFT, LEG_L_TOP, LEG_L_BOT,
     LEG_R_FRONT,  LEG_R_BACK, LEG_R_RIGHT, LEG_R_LEFT, LEG_R_TOP, LEG_R_BOT
 }   t_face_id;
+
+/* ===================== 3D Math types ===================== */
+
+typedef struct s_vec3
+{
+    float   x;
+    float   y;
+    float   z;
+}   t_vec3;
+
+typedef struct s_vec4
+{
+    float   x;
+    float   y;
+    float   z;
+    float   w;
+}   t_vec4;
+
+/* Column-major 4x4 matrix */
+typedef struct s_mat4
+{
+    float   m[4][4];
+}   t_mat4;
+
+/* A vertex ready for rasterization */
+typedef struct s_vert
+{
+    t_vec4  clip;       /* homogeneous clip space */
+    float   u;
+    float   v;
+    float   wx;         /* world X (for world-space UV) */
+    float   wy;         /* world Y */
+    float   wz;         /* world Z */
+}   t_vert;
+
+/* ===================== Game types ===================== */
 
 typedef struct s_tex
 {
@@ -95,12 +131,6 @@ typedef struct s_obj_def
     int     spawn_chance;
 }   t_obj_def;
 
-/*
-** t_block : un bloc 3D positionné dans le monde.
-** wx, wy : position monde (tile)
-** z      : altitude du bas du bloc (entier)
-** type   : BTYPE_*
-*/
 typedef struct s_block
 {
     int     wx;
@@ -109,12 +139,6 @@ typedef struct s_block
     int     type;
 }   t_block;
 
-/*
-** t_chunk : bloc 16x16 du monde.
-** height       : hauteur de surface par tile (cache Perlin)
-** extra_blocks : blocs 3D supplémentaires (troncs, feuilles)
-** nb_extra     : nombre de blocs extra dans ce chunk
-*/
 typedef struct s_chunk
 {
     int     cx;
@@ -159,7 +183,8 @@ typedef struct s_player
     float           dir_y;
     float           plane_x;
     float           plane_y;
-    float           pitch;
+    float           pitch;      /* vertical look angle in radians */
+    float           yaw;        /* horizontal angle in radians    */
     float           z_offset;
     float           z;
     float           vel_z;
@@ -172,33 +197,16 @@ typedef struct s_player
     SDL_Scancode    sneak_key;
 }   t_player;
 
-typedef struct s_ray
-{
-    float   camera_x;
-    float   ray_dx;
-    float   ray_dy;
-    int     map_x;
-    int     map_y;
-    float   side_dist_x;
-    float   side_dist_y;
-    float   delta_x;
-    float   delta_y;
-    float   wall_dist;
-    int     step_x;
-    int     step_y;
-    int     side;
-    int     line_h;
-    int     draw_start;
-    int     draw_end;
-    float   wall_x;
-}   t_ray;
-
 typedef struct s_game
 {
     SDL_Window      *window;
     SDL_Renderer    *renderer;
     SDL_Texture     *framebuf;
     SDL_Texture     *skin_tex;
+    SDL_Texture     *steve_tex;         /* pre-allocated Steve texture */
+    int             steve_tex_w;
+    int             steve_tex_h;
+    Uint32          *steve_buf;         /* pixel buffer for Steve     */
     Uint32          *skin_pixels;
     int             skin_w;
     int             skin_h;
@@ -222,7 +230,34 @@ typedef struct s_game
     int             steve_dragging;
     int             steve_drag_x;
     int             steve_mouse_dx;
+    /* 3D renderer matrices (updated each frame) */
+    t_mat4          mat_view;
+    t_mat4          mat_proj;
+    t_mat4          mat_vp;     /* view * proj combined */
 }   t_game;
+
+/* ===================== Function prototypes ===================== */
+
+/* math3d.c */
+t_mat4  mat4_identity(void);
+t_mat4  mat4_mul(t_mat4 a, t_mat4 b);
+t_vec4  mat4_mul_vec4(t_mat4 m, t_vec4 v);
+t_mat4  mat4_perspective(float fov_rad, float aspect, float near, float far);
+t_mat4  mat4_look_at(t_vec3 eye, t_vec3 center, t_vec3 up);
+t_vec3  vec3_norm(t_vec3 v);
+t_vec3  vec3_cross(t_vec3 a, t_vec3 b);
+float   vec3_dot(t_vec3 a, t_vec3 b);
+t_vec3  vec3_sub(t_vec3 a, t_vec3 b);
+
+/* raster3d.c */
+void    r3d_begin_frame(t_game *game);
+void    r3d_draw_quad(t_game *game,
+            t_vec3 p0, t_vec3 p1, t_vec3 p2, t_vec3 p3,
+            float u0, float v0, float u1, float v1,
+            t_tex *tex, float fog, int border);
+void    r3d_draw_billboard(t_game *game,
+            float wx, float wy, float wz_bot, float wz_top,
+            float half_w, t_tex *tex, float u0, float u1);
 
 /* textures.c */
 int     load_one_tex(t_tex *tex, const char *path);

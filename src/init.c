@@ -3,6 +3,8 @@
 int init_sdl(t_game *game)
 {
     SDL_DisplayMode mode;
+    int             steve_w;
+    int             steve_h;
 
     SDL_SetHintWithPriority(SDL_HINT_MOUSE_RELATIVE_MODE_WARP,
         "1", SDL_HINT_OVERRIDE);
@@ -27,15 +29,50 @@ int init_sdl(t_game *game)
         SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
         game->screen_w, game->screen_h);
     if (!game->framebuf) return (-1);
+
+    /* Pixel buffer (couleurs) */
     game->pixels = malloc(sizeof(Uint32) * game->screen_w * game->screen_h);
     if (!game->pixels) return (-1);
-    game->zbuf = malloc(sizeof(float) * game->screen_w);
+
+    /*
+    ** zbuf : maintenant PER-PIXEL (screen_w × screen_h floats)
+    ** pour un vrai z-buffer 3D (plus screen_w uniquement).
+    */
+    game->zbuf = malloc(sizeof(float) * game->screen_w * game->screen_h);
     if (!game->zbuf) return (-1);
+
     game->font = TTF_OpenFont(FONT_PATH, 32);
     if (!game->font) return (-1);
     game->font_small = TTF_OpenFont(FONT_PATH, 18);
     if (!game->font_small) return (-1);
     if (load_textures(game) != 0) return (-1);
+
+    /*
+    ** Pré-allocation de la texture Steve pour l'inventaire.
+    ** Taille fixe suffisante : 200×320 pixels.
+    ** On évite ainsi les malloc/free chaque frame qui causaient le crash.
+    */
+    steve_w = 200;
+    steve_h = 320;
+    game->steve_tex_w = steve_w;
+    game->steve_tex_h = steve_h;
+    game->steve_buf   = calloc(steve_w * steve_h, sizeof(Uint32));
+    if (!game->steve_buf)
+    {
+        fprintf(stderr, "Cannot alloc steve_buf\n");
+        return (-1);
+    }
+    game->steve_tex = SDL_CreateTexture(game->renderer,
+        SDL_PIXELFORMAT_ARGB8888,
+        SDL_TEXTUREACCESS_STREAMING,
+        steve_w, steve_h);
+    if (!game->steve_tex)
+    {
+        fprintf(stderr, "Cannot create steve_tex: %s\n", SDL_GetError());
+        return (-1);
+    }
+    SDL_SetTextureBlendMode(game->steve_tex, SDL_BLENDMODE_BLEND);
+
     SDL_ShowCursor(SDL_ENABLE);
     SDL_SetRelativeMouseMode(SDL_FALSE);
     game->running            = 1;
@@ -53,6 +90,8 @@ void cleanup(t_game *game)
     free_textures(game);
     if (game->pixels)     free(game->pixels);
     if (game->zbuf)       free(game->zbuf);
+    if (game->steve_buf)  free(game->steve_buf);
+    if (game->steve_tex)  SDL_DestroyTexture(game->steve_tex);
     if (game->framebuf)   SDL_DestroyTexture(game->framebuf);
     if (game->font)       TTF_CloseFont(game->font);
     if (game->font_small) TTF_CloseFont(game->font_small);

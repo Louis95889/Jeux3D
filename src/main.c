@@ -14,6 +14,8 @@ int main(int argc, char **argv)
     game.player.dir_y     =  1.0f;
     game.player.plane_x   =  0.66f;
     game.player.plane_y   =  0.0f;
+    game.player.yaw       =  0.0f;
+    game.player.pitch     =  0.0f;
     game.player.on_ground = 1;
 
     if (init_sdl(&game) != 0)
@@ -22,10 +24,6 @@ int main(int argc, char **argv)
     game.world.game_ptr = &game;
     world_init(&game.world, seed);
 
-    /*
-    ** Position de spawn : centre du monde.
-    ** z = hauteur du terrain au spawn + hauteur joueur.
-    */
     game.player.x = (float)(CHUNK_SIZE / 2) + 0.5f;
     game.player.y = (float)(CHUNK_SIZE / 2) + 0.5f;
     spawn_h = world_get_height(&game.world,

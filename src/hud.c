@@ -106,10 +106,8 @@ static void draw_label(t_game *game, const char *txt,
 }
 
 /*
-** Gestion du drag souris via les events SDL_MOUSEMOTION.
-** On stocke le delta xrel directement depuis les events
-** dans game->steve_mouse_dx, puis on l'applique ici.
-** C'est plus fiable que SDL_GetMouseState pour le drag.
+** Gestion drag souris pour rotation de Steve.
+** Utilise les deltas accumulés depuis les événements SDL_MOUSEMOTION.
 */
 static void handle_steve_drag(t_game *game, SDL_Rect zone)
 {
@@ -130,9 +128,8 @@ static void handle_steve_drag(t_game *game, SDL_Rect zone)
             game->steve_dragging = 1;
         return ;
     }
-    /* Applique le delta accumulé depuis les events */
-    game->steve_angle += (float)game->steve_mouse_dx * 0.015f;
-    game->steve_mouse_dx = 0;
+    game->steve_angle    += (float)game->steve_mouse_dx * 0.015f;
+    game->steve_mouse_dx  = 0;
 }
 
 static void render_inventory(t_game *game)
@@ -151,6 +148,9 @@ static void render_inventory(t_game *game)
     int         row, col, x, y;
     SDL_Rect    bg;
 
+    /* Garder l'inventaire dans les limites de l'écran */
+    if (ox < 0) ox = 0;
+    if (oy < margin) oy = margin;
     if (oy + inv_h > game->screen_h - margin)
         oy = game->screen_h - inv_h - margin;
 
@@ -165,7 +165,7 @@ static void render_inventory(t_game *game)
 
     int top_y = oy + 30;
 
-    /* Armure */
+    /* Emplacements armure */
     const char *armor[] = {"H", "T", "J", "B"};
     col = 0;
     while (col < 4)
@@ -177,24 +177,37 @@ static void render_inventory(t_game *game)
         col++;
     }
 
-    /* Zone Steve */
+    /* Zone Steve : calcul sécurisé de la taille */
     int sz_x = ox + margin + step + 4;
     int sz_w = 3 * step - 8;
     int sz_h = 4 * step - 4;
+
+    /* Clamp pour ne pas dépasser le buffer pré-alloué */
+    if (sz_w < 10) sz_w = 10;
+    if (sz_h < 10) sz_h = 10;
+
     SDL_Rect zone = {sz_x, top_y, sz_w, sz_h};
     SDL_SetRenderDrawColor(game->renderer, 25, 25, 45, 210);
     SDL_RenderFillRect(game->renderer, &zone);
     SDL_SetRenderDrawColor(game->renderer, 80, 80, 110, 255);
     SDL_RenderDrawRect(game->renderer, &zone);
 
+    /*
+    ** Calcul de scale basé sur la taille de la zone, clampé
+    ** pour que ça tienne dans le buffer steve pré-alloué.
+    */
     float scale    = (float)sz_h / 42.0f;
+    if (scale > 6.0f) scale = 6.0f;
+    if (scale < 0.5f) scale = 0.5f;
+
     int   anchor_x = sz_x + sz_w / 2;
     int   anchor_y = top_y + sz_h;
 
+    /* draw_steve_3d utilise le buffer pré-alloué → pas de crash */
     draw_steve_3d(game, anchor_x, anchor_y, game->steve_angle, scale);
     handle_steve_drag(game, zone);
 
-    /* Craft 2x2 */
+    /* Fabrication 2x2 */
     int craft_x = ox + margin + 5 * step;
     draw_label(game, "Fabrication", craft_x, oy + 8, yellow);
     row = 0;
@@ -221,7 +234,7 @@ static void render_inventory(t_game *game)
     SDL_RenderDrawLine(game->renderer,
         ox + 8, sep_y, ox + inv_w - 8, sep_y);
 
-    /* Inventaire 3x9 */
+    /* Inventaire 3×9 */
     int inv_y = sep_y + 14;
     row = 0;
     while (row < 3)
